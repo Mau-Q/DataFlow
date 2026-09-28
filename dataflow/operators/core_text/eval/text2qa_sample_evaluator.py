@@ -40,6 +40,8 @@ class Text2QASampleEvaluator(OperatorABC):
                 "输入参数：\n"
                 "- input_question_key: Field name containing the generated question\n"
                 "- input_answer_key: Field name containing the generated answer\n"
+                "- input_context_key: Optional field containing source context for grounded verifiability\n"
+                "- input_supporting_facts_key: Optional field containing untrusted supporting facts\n"
                 "- output_question_quality_key: Field name containing the question quality grade\n"
                 "- output_question_quality_feedback_key: Field name containing the question quality feedback\n"
                 "- output_answer_alignment_key: Field name containing the answer alignment grade\n"
@@ -54,6 +56,8 @@ class Text2QASampleEvaluator(OperatorABC):
                 "Input Parameters:\n"
                 "- input_question_key: Field name containing the generated question\n"
                 "- input_answer_key: Field name containing the generated answer\n"
+                "- input_context_key: Optional field containing source context for grounded verifiability\n"
+                "- input_supporting_facts_key: Optional field containing untrusted supporting facts\n"
                 "- output_question_quality_key: Field name containing the question quality grade\n"
                 "- output_question_quality_feedback_key: Field name containing the question quality feedback\n"
                 "- output_answer_alignment_key: Field name containing the answer alignment grade\n"
@@ -67,6 +71,13 @@ class Text2QASampleEvaluator(OperatorABC):
 
     def _validate_dataframe(self, dataframe: pd.DataFrame):
         required_keys = [self.input_question_key, self.input_answer_key]
+        required_keys += [
+            key for key in (
+                self.input_context_key,
+                self.input_supporting_facts_key,
+            )
+            if key
+        ]
         grade_keys = [self.output_question_quality_key, self.output_answer_alignment_key,
                       self.output_answer_verifiability_key, self.output_downstream_value_key]
         forbidden_keys = [self.output_question_quality_key, self.output_question_quality_feedback_key, self.output_answer_alignment_key, self.output_answer_alignment_feedback_key, self.output_answer_verifiability_key, self.output_answer_verifiability_feedback_key, self.output_downstream_value_key, self.output_downstream_value_feedback_key]
@@ -103,7 +114,31 @@ class Text2QASampleEvaluator(OperatorABC):
             question_quality_inputs.append(question_quality_content)
             answer_alignment_content = answer_alignment_prompt + "Question: " + row[self.input_question_key] + "\n" + "Answer: " + row[self.input_answer_key]
             answer_alignment_inputs.append(answer_alignment_content)
-            answer_verifiability_content = answer_verifiability_prompt + "Question: " + row[self.input_question_key] + "\n" + "Answer: " + row[self.input_answer_key]
+            context = (
+                row[self.input_context_key]
+                if self.input_context_key else "[No source context supplied]"
+            )
+            if not isinstance(context, str):
+                context = str(context)
+            supporting_facts = []
+            if self.input_supporting_facts_key:
+                supporting_value = row[self.input_supporting_facts_key]
+                if isinstance(supporting_value, dict):
+                    supporting_facts = supporting_value.get("supporting_facts", [])
+                elif isinstance(supporting_value, list):
+                    supporting_facts = supporting_value
+            if not isinstance(supporting_facts, list):
+                supporting_facts = [supporting_facts]
+            formatted_facts = "\n".join(
+                f"- {fact}" for fact in supporting_facts if isinstance(fact, str)
+            ) or "[No candidate supporting facts supplied]"
+            answer_verifiability_content = (
+                answer_verifiability_prompt
+                + "Source context:\n" + context + "\n\n"
+                + "Candidate supporting facts:\n" + formatted_facts + "\n\n"
+                + "Question: " + row[self.input_question_key] + "\n"
+                + "Answer: " + row[self.input_answer_key]
+            )
             answer_verifiability_inputs.append(answer_verifiability_content)
             downstream_value_content = downstream_value_prompt + "Question: " + row[self.input_question_key] + "\n" + "Answer: " + row[self.input_answer_key]
             downstream_value_inputs.append(downstream_value_content)
@@ -194,6 +229,8 @@ class Text2QASampleEvaluator(OperatorABC):
         storage: DataFlowStorage,
         input_question_key: str = "generated_question",
         input_answer_key: str = "generated_answer",
+        input_context_key: str | None = None,
+        input_supporting_facts_key: str | None = None,
         output_question_quality_key: str = "question_quality_grades",
         output_question_quality_feedback_key: str = "question_quality_feedbacks",
         output_answer_alignment_key: str = "answer_alignment_grades",
@@ -203,7 +240,18 @@ class Text2QASampleEvaluator(OperatorABC):
         output_downstream_value_key: str = "downstream_value_grades",
         output_downstream_value_feedback_key: str = "downstream_value_feedbacks"
     ):
-        self.input_question_key, self.input_answer_key, self.output_question_quality_key, self.output_question_quality_feedback_key, self.output_answer_alignment_key, self.output_answer_alignment_feedback_key, self.output_answer_verifiability_key, self.output_answer_verifiability_feedback_key, self.output_downstream_value_key, self.output_downstream_value_feedback_key = input_question_key, input_answer_key, output_question_quality_key, output_question_quality_feedback_key, output_answer_alignment_key, output_answer_alignment_feedback_key, output_answer_verifiability_key, output_answer_verifiability_feedback_key, output_downstream_value_key, output_downstream_value_feedback_key
+        self.input_question_key = input_question_key
+        self.input_answer_key = input_answer_key
+        self.input_context_key = input_context_key
+        self.input_supporting_facts_key = input_supporting_facts_key
+        self.output_question_quality_key = output_question_quality_key
+        self.output_question_quality_feedback_key = output_question_quality_feedback_key
+        self.output_answer_alignment_key = output_answer_alignment_key
+        self.output_answer_alignment_feedback_key = output_answer_alignment_feedback_key
+        self.output_answer_verifiability_key = output_answer_verifiability_key
+        self.output_answer_verifiability_feedback_key = output_answer_verifiability_feedback_key
+        self.output_downstream_value_key = output_downstream_value_key
+        self.output_downstream_value_feedback_key = output_downstream_value_feedback_key
 
         dataframe = storage.read("dataframe")
         self._validate_dataframe(dataframe)

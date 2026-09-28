@@ -104,6 +104,54 @@ def test_text2qa_run_exports_parse_evidence_for_reuse_by_other_pipelines():
         assert f"{grade_key}_parse_status" in keys
 
 
+def test_text2qa_verifiability_prompt_includes_source_and_untrusted_facts_only():
+    evaluator = Text2QASampleEvaluator(llm_serving=FakeServing())
+    evaluator.input_question_key = "question"
+    evaluator.input_answer_key = "answer"
+    evaluator.input_context_key = "raw_chunk"
+    evaluator.input_supporting_facts_key = "QA_pairs"
+    frame = pd.DataFrame([{
+        "question": "What is the configured weight decay?",
+        "answer": "0",
+        "raw_chunk": "The configured weight decay is 0.1.",
+        "QA_pairs": {"supporting_facts": ["weight decay of 0"]},
+    }])
+
+    question, alignment, verifiability, downstream = evaluator._build_prompts(frame)
+
+    assert "The configured weight decay is 0.1." in verifiability[0]
+    assert "- weight decay of 0" in verifiability[0]
+    assert "untrusted model output" in verifiability[0]
+    for prompt in (question[0], alignment[0], downstream[0]):
+        assert "The configured weight decay is 0.1." not in prompt
+        assert "weight decay of 0" not in prompt
+
+
+def test_text2qa_requires_configured_source_fields():
+    evaluator = Text2QASampleEvaluator(llm_serving=FakeServing())
+    evaluator.input_question_key = "question"
+    evaluator.input_answer_key = "answer"
+    evaluator.input_context_key = "raw_chunk"
+    evaluator.input_supporting_facts_key = "QA_pairs"
+    evaluator.output_question_quality_key = "question_quality_grades"
+    evaluator.output_question_quality_feedback_key = "question_quality_feedbacks"
+    evaluator.output_answer_alignment_key = "answer_alignment_grades"
+    evaluator.output_answer_alignment_feedback_key = "answer_alignment_feedbacks"
+    evaluator.output_answer_verifiability_key = "answer_verifiability_grades"
+    evaluator.output_answer_verifiability_feedback_key = "answer_verifiability_feedbacks"
+    evaluator.output_downstream_value_key = "downstream_value_grades"
+    evaluator.output_downstream_value_feedback_key = "downstream_value_feedbacks"
+
+    try:
+        evaluator._validate_dataframe(pd.DataFrame([{
+            "question": "Q", "answer": "A", "raw_chunk": "C"
+        }]))
+    except ValueError as exc:
+        assert "QA_pairs" in str(exc)
+    else:
+        raise AssertionError("missing supporting-facts field must be rejected")
+
+
 def test_alpagasus_empty_response_does_not_crash():
     evaluator = AlpagasusSampleEvaluator(llm_serving=FakeServing())
     scores = evaluator.get_score(
