@@ -2,6 +2,7 @@ from dataflow.utils.registry import OPERATOR_REGISTRY
 from dataflow import get_logger
 from dataflow.core import OperatorABC
 from dataflow.utils.storage import DataFlowStorage
+import math
 import pandas as pd
 from dataflow.core import LLMServingABC
 from dataflow.core.prompt import prompt_restrict
@@ -52,7 +53,8 @@ class AlpagasusSampleEvaluator(OperatorABC):
         else:
             return "Evaluate instruction quality using GPT; higher scores indicate better quality."
 
-    def get_score(self, samples, input_instruction_key, input_input_key, input_output_key):
+    def get_score(self, samples, input_instruction_key, input_input_key, input_output_key,
+                  include_audit=False):
         system_prompts = []
         user_prompts = []
         for sample in samples:
@@ -63,26 +65,41 @@ class AlpagasusSampleEvaluator(OperatorABC):
             user_prompts.append(self.prompt.build_prompt())
         inputs = [system + "\n" + user for system, user in zip(system_prompts, user_prompts)]
         responses = self.llm_serving.generate_from_input(user_inputs=inputs)
+        if not isinstance(responses, list):
+            responses = []
         scores = []
-        for index, response in enumerate(responses):
+        statuses = []
+        raw_responses = []
+        for index in range(len(inputs)):
+            response = responses[index] if index < len(responses) else None
             try:
                 if not isinstance(response, str) or not response.strip():
                     raise ValueError("empty or non-text response")
                 score_line = response.strip().split("\n")[0]
                 score = float(score_line.split()[0])
+                if not math.isfinite(score) or not 0 <= score <= 5:
+                    raise ValueError("score outside the 0-5 rubric")
+                status = "parsed"
             except (ValueError, IndexError) as exc:
                 self.logger.warning(
                     f"Invalid Alpagasus evaluation response at index {index}: {exc}"
                 )
-                score = 0.0
+                score = None
+                status = "parse_failed"
             scores.append(score)
-            
+            statuses.append(status)
+            raw_responses.append(response)
+
+        if include_audit:
+            return scores, statuses, raw_responses
         return scores
 
-    def eval(self, dataframe: pd.DataFrame, input_instruction_key: str, input_input_key: str, input_output_key: str):
+    def eval(self, dataframe: pd.DataFrame, input_instruction_key: str, input_input_key: str,
+             input_output_key: str, include_audit=False):
         samples = dataframe.to_dict(orient='records')
         self.logger.info(f"Evaluating {self.score_name}...")
-        scores = self.get_score(samples, input_instruction_key, input_input_key, input_output_key)
+        scores = self.get_score(samples, input_instruction_key, input_input_key,
+                                input_output_key, include_audit=include_audit)
         self.logger.info("Evaluation complete!")
         return scores
 
@@ -93,6 +110,13 @@ class AlpagasusSampleEvaluator(OperatorABC):
         self.input_output_key = input_output_key
         self.output_key = output_key
         dataframe = storage.read("dataframe")
-        scores = self.eval(dataframe, self.input_instruction_key, self.input_input_key, self.input_output_key)
+        scores, statuses, raw_responses = self.eval(
+            dataframe, self.input_instruction_key, self.input_input_key,
+            self.input_output_key, include_audit=True
+        )
         dataframe[self.output_key] = scores
+        dataframe[f"{self.output_key}_parse_status"] = statuses
+        dataframe[f"{self.output_key}_raw_response"] = raw_responses
         storage.write(dataframe)
+        return [self.output_key, f"{self.output_key}_parse_status",
+                f"{self.output_key}_raw_response"]

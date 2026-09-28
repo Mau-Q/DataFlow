@@ -1,8 +1,6 @@
 import pytest
 
-from dataflow.operators.general_text.eval.ngram_sample_evaluator import (
-    NgramSampleEvaluator,
-)
+from dataflow.operators.general_text import NgramSampleEvaluator
 
 
 @pytest.mark.cpu

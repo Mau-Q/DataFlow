@@ -113,7 +113,7 @@ class Text2QASampleEvaluator(OperatorABC):
     def _parse_grade_and_feedback(self, response: str) -> tuple:
         if not isinstance(response, str) or not response.strip():
             self.logger.warning("Skipping empty or non-text Text2QA evaluation response")
-            return 0.0, "invalid_or_empty_model_response"
+            return None, "invalid_or_empty_model_response"
         # Models often move the Markdown bold markers around the label/colon.
         # Read only an explicit grading line; never infer a grade from feedback.
         grading = None
@@ -137,7 +137,6 @@ class Text2QASampleEvaluator(OperatorABC):
         if grading is None:
             self.logger.warning("Text2QA evaluation response has no parseable grading")
             feedback = f"grading_parse_failed: {feedback}".rstrip()
-            grading = 0.0
 
         return grading, feedback
 
@@ -153,7 +152,7 @@ class Text2QASampleEvaluator(OperatorABC):
             grade, feedback = self._parse_grade_and_feedback(response)
             retry_response = None
             parse_status = "parsed"
-            if grade == 0:
+            if grade is None:
                 self.logger.warning(
                     f"Retrying unparseable Text2QA grade for row {index}; "
                     f"raw response: {str(response)[:200]!r}"
@@ -178,7 +177,7 @@ class Text2QASampleEvaluator(OperatorABC):
                     if isinstance(retry_responses, list) and retry_responses else None
                 )
                 retry_grade, retry_feedback = self._parse_grade_and_feedback(retry_response)
-                if retry_grade > 0:
+                if retry_grade is not None:
                     grade, feedback = retry_grade, f"grading_parse_retry_recovered: {retry_feedback}"
                     parse_status = "retry_recovered"
                 else:

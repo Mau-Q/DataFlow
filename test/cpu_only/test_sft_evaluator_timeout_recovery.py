@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 
 from dataflow.operators.core_text import Text2QASampleEvaluator
@@ -12,10 +14,10 @@ class FakeServing:
 def test_text2qa_empty_response_is_an_explicit_invalid_score():
     evaluator = Text2QASampleEvaluator(llm_serving=FakeServing())
     assert evaluator._parse_grade_and_feedback(None) == (
-        0.0, "invalid_or_empty_model_response"
+        None, "invalid_or_empty_model_response"
     )
     assert evaluator._parse_grade_and_feedback("**Feedback**: useful") == (
-        0.0, "grading_parse_failed: useful"
+        None, "grading_parse_failed: useful"
     )
 
 
@@ -31,10 +33,10 @@ def test_text2qa_accepts_common_grading_formats_without_guessing_from_feedback()
 
     assert evaluator._parse_grade_and_feedback(
         "**Feedback**: I would give it 4 points."
-    ) == (0.0, "grading_parse_failed: I would give it 4 points.")
+    ) == (None, "grading_parse_failed: I would give it 4 points.")
     assert evaluator._parse_grade_and_feedback(
         "Grading: 6\n**Feedback**: useful"
-    ) == (0.0, "grading_parse_failed: useful")
+    ) == (None, "grading_parse_failed: useful")
 
 
 def test_text2qa_retries_only_unparseable_rows_once():
@@ -65,7 +67,7 @@ def test_text2qa_retries_only_unparseable_rows_once():
 def test_text2qa_marks_a_second_parse_failure():
     evaluator = Text2QASampleEvaluator(llm_serving=FakeServing())
     grades, feedbacks, audit = evaluator._score_dimension(["one prompt"])
-    assert grades == [0.0]
+    assert grades == [None]
     assert feedbacks[0].startswith("grading_parse_failed_after_retry:")
     assert audit[0]["parse_status"] == "parse_failed"
     assert audit[0]["raw_response"] is None
@@ -108,4 +110,65 @@ def test_alpagasus_empty_response_does_not_crash():
         [{"question": "Q", "raw_chunk": "Context", "answer": "A"}],
         "question", "raw_chunk", "answer",
     )
-    assert scores == [0.0]
+    assert scores == [None]
+
+
+def test_alpagasus_preserves_real_zero_and_marks_missing_response():
+    class Serving:
+        def generate_from_input(self, user_inputs, system_prompt=None):
+            return ["0\nLow quality", "unreadable"]  # Third response is missing.
+
+    evaluator = AlpagasusSampleEvaluator(llm_serving=Serving())
+    samples = [{"question": "Q", "raw_chunk": "Context", "answer": "A"}] * 3
+    scores, statuses, raw = evaluator.get_score(
+        samples, "question", "raw_chunk", "answer", include_audit=True
+    )
+    assert scores == [0.0, None, None]
+    assert statuses == ["parsed", "parse_failed", "parse_failed"]
+    assert raw == ["0\nLow quality", "unreadable", None]
+    encoded = pd.DataFrame({"score": scores, "status": statuses}).to_json(
+        orient="records", lines=True
+    )
+    rows = [json.loads(line) for line in encoded.splitlines()]
+    assert [row["score"] for row in rows] == [0, None, None]
+    assert (pd.Series(scores) >= 4).tolist() == [False, False, False]
+
+
+def test_alpagasus_run_writes_score_and_parse_evidence():
+    class Storage:
+        def __init__(self):
+            self.frame = pd.DataFrame([
+                {"question": "Q1", "raw_chunk": "Context", "answer": "A1"},
+                {"question": "Q2", "raw_chunk": "Context", "answer": "A2"},
+            ])
+
+        def read(self, output_type):
+            assert output_type == "dataframe"
+            return self.frame
+
+        def write(self, frame):
+            self.frame = frame
+            return "test-output.jsonl"
+
+    class Serving:
+        def generate_from_input(self, user_inputs, system_prompt=None):
+            return ["0\nLow quality", "unreadable"]
+
+    storage = Storage()
+    keys = AlpagasusSampleEvaluator(llm_serving=Serving()).run(
+        storage, "question", "raw_chunk", "answer"
+    )
+    assert keys == [
+        "AlpagasusScore", "AlpagasusScore_parse_status",
+        "AlpagasusScore_raw_response",
+    ]
+    rows = [json.loads(line) for line in storage.frame.to_json(
+        orient="records", lines=True
+    ).splitlines()]
+    assert [row["AlpagasusScore"] for row in rows] == [0, None]
+    assert [row["AlpagasusScore_parse_status"] for row in rows] == [
+        "parsed", "parse_failed"
+    ]
+    assert [row["AlpagasusScore_raw_response"] for row in rows] == [
+        "0\nLow quality", "unreadable"
+    ]
