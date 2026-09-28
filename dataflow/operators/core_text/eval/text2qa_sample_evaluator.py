@@ -67,7 +67,11 @@ class Text2QASampleEvaluator(OperatorABC):
 
     def _validate_dataframe(self, dataframe: pd.DataFrame):
         required_keys = [self.input_question_key, self.input_answer_key]
+        grade_keys = [self.output_question_quality_key, self.output_answer_alignment_key,
+                      self.output_answer_verifiability_key, self.output_downstream_value_key]
         forbidden_keys = [self.output_question_quality_key, self.output_question_quality_feedback_key, self.output_answer_alignment_key, self.output_answer_alignment_feedback_key, self.output_answer_verifiability_key, self.output_answer_verifiability_feedback_key, self.output_downstream_value_key, self.output_downstream_value_feedback_key]
+        forbidden_keys += [f"{key}_{suffix}" for key in grade_keys
+                           for suffix in ("parse_status", "raw_response", "retry_response")]
 
         missing = [k for k in required_keys if k not in dataframe.columns]
         conflict = [k for k in forbidden_keys if k in dataframe.columns]
@@ -107,12 +111,84 @@ class Text2QASampleEvaluator(OperatorABC):
         return question_quality_inputs, answer_alignment_inputs, answer_verifiability_inputs, downstream_value_inputs
 
     def _parse_grade_and_feedback(self, response: str) -> tuple:
-        grading_match = re.search(r"\*\*Grading\*\*:\s*(\d+)", response)
-        feedback_match = re.search(r"\*\*Feedback\*\*:\s*(.+)", response, re.DOTALL)
-        grading = float(grading_match.group(1)) if grading_match else 0
+        if not isinstance(response, str) or not response.strip():
+            self.logger.warning("Skipping empty or non-text Text2QA evaluation response")
+            return 0.0, "invalid_or_empty_model_response"
+        # Models often move the Markdown bold markers around the label/colon.
+        # Read only an explicit grading line; never infer a grade from feedback.
+        grading = None
+        for line in response.splitlines():
+            heading = line.strip().replace("**", "").replace("`", "")
+            match = re.fullmatch(
+                r"(?:[-*]\s*)?(?:Grading|Grade|Score|评分)\s*[:：]\s*"
+                r"(?:\[\s*([1-5])\s*\]|([1-5]))"
+                r"(?:\s*(?:/\s*5|分))?\s*",
+                heading,
+                re.IGNORECASE,
+            )
+            if match:
+                grading = float(match.group(1) or match.group(2))
+                break
+        feedback_match = re.search(
+            r"^\s*(?:\*\*)?(?:Feedback|反馈)(?:\*\*)?\s*[:：]\s*(.+)",
+            response, re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
         feedback = feedback_match.group(1).strip() if feedback_match else ''
+        if grading is None:
+            self.logger.warning("Text2QA evaluation response has no parseable grading")
+            feedback = f"grading_parse_failed: {feedback}".rstrip()
+            grading = 0.0
 
         return grading, feedback
+
+    def _score_dimension(self, inputs: list[str]) -> tuple:
+        responses = self.llm_serving.generate_from_input(user_inputs=inputs, system_prompt="")
+        if not isinstance(responses, list):
+            responses = []
+        grades = []
+        feedbacks = []
+        audit = []
+        for index, prompt in enumerate(inputs):
+            response = responses[index] if index < len(responses) else None
+            grade, feedback = self._parse_grade_and_feedback(response)
+            retry_response = None
+            parse_status = "parsed"
+            if grade == 0:
+                self.logger.warning(
+                    f"Retrying unparseable Text2QA grade for row {index}; "
+                    f"raw response: {str(response)[:200]!r}"
+                )
+                retry_prompt = (
+                    prompt + "\nYour previous reply did not provide a parseable grade. "
+                    "Re-evaluate using the same rubric. Reply with exactly two fields: "
+                    "**Grading**: N (where N is an integer from 1 to 5), followed by "
+                    "**Feedback**: your explanation.\n"
+                )
+                try:
+                    retry_responses = self.llm_serving.generate_from_input(
+                        user_inputs=[retry_prompt], system_prompt=""
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Text2QA grade retry failed for row {index}: {type(exc).__name__}"
+                    )
+                    retry_responses = []
+                retry_response = (
+                    retry_responses[0]
+                    if isinstance(retry_responses, list) and retry_responses else None
+                )
+                retry_grade, retry_feedback = self._parse_grade_and_feedback(retry_response)
+                if retry_grade > 0:
+                    grade, feedback = retry_grade, f"grading_parse_retry_recovered: {retry_feedback}"
+                    parse_status = "retry_recovered"
+                else:
+                    feedback = f"grading_parse_failed_after_retry: {feedback}"
+                    parse_status = "parse_failed"
+            grades.append(grade)
+            feedbacks.append(feedback)
+            audit.append({"parse_status": parse_status, "raw_response": response,
+                          "retry_response": retry_response})
+        return grades, feedbacks, audit
 
     def run(
         self,
@@ -138,20 +214,16 @@ class Text2QASampleEvaluator(OperatorABC):
 
         # 生成四类分数和反馈
         self.logger.info("Scoring question quality...")
-        q_scores = self.llm_serving.generate_from_input(user_inputs=q_inputs, system_prompt="")
-        q_grades, q_feedbacks = zip(*[self._parse_grade_and_feedback(r) for r in q_scores])
+        q_grades, q_feedbacks, q_audit = self._score_dimension(q_inputs)
 
         self.logger.info("Scoring answer alignment...")
-        a_scores = self.llm_serving.generate_from_input(user_inputs=a_inputs, system_prompt="")
-        a_grades, a_feedbacks = zip(*[self._parse_grade_and_feedback(r) for r in a_scores])
+        a_grades, a_feedbacks, a_audit = self._score_dimension(a_inputs)
 
         self.logger.info("Scoring answer verifiability...")
-        v_scores = self.llm_serving.generate_from_input(user_inputs=v_inputs, system_prompt="")
-        v_grades, v_feedbacks = zip(*[self._parse_grade_and_feedback(r) for r in v_scores])
+        v_grades, v_feedbacks, v_audit = self._score_dimension(v_inputs)
 
         self.logger.info("Scoring downstream value...")
-        d_scores = self.llm_serving.generate_from_input(user_inputs=d_inputs, system_prompt="")
-        d_grades, d_feedbacks = zip(*[self._parse_grade_and_feedback(r) for r in d_scores])
+        d_grades, d_feedbacks, d_audit = self._score_dimension(d_inputs)
 
         # 写回结果
         dataframe[self.output_question_quality_key] = q_grades
@@ -162,6 +234,11 @@ class Text2QASampleEvaluator(OperatorABC):
         dataframe[self.output_answer_verifiability_feedback_key] = v_feedbacks
         dataframe[self.output_downstream_value_key] = d_grades
         dataframe[self.output_downstream_value_feedback_key] = d_feedbacks
+        audit_keys = (self.output_question_quality_key, self.output_answer_alignment_key,
+                      self.output_answer_verifiability_key, self.output_downstream_value_key)
+        for key, entries in zip(audit_keys, (q_audit, a_audit, v_audit, d_audit)):
+            for field in ("parse_status", "raw_response", "retry_response"):
+                dataframe[f"{key}_{field}"] = [entry[field] for entry in entries]
 
         output_file = storage.write(dataframe)
         self.logger.info(f"Results saved to {output_file}")
@@ -171,4 +248,5 @@ class Text2QASampleEvaluator(OperatorABC):
             output_answer_alignment_key, output_answer_alignment_feedback_key,
             output_answer_verifiability_key, output_answer_verifiability_feedback_key,
             output_downstream_value_key, output_downstream_value_feedback_key
-        ]
+        ] + [f"{key}_{field}" for key in audit_keys
+             for field in ("parse_status", "raw_response", "retry_response")]

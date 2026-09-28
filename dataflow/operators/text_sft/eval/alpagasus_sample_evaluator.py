@@ -64,9 +64,17 @@ class AlpagasusSampleEvaluator(OperatorABC):
         inputs = [system + "\n" + user for system, user in zip(system_prompts, user_prompts)]
         responses = self.llm_serving.generate_from_input(user_inputs=inputs)
         scores = []
-        for response in responses:
-            score_line = response.strip().split("\n")[0]
-            score = float(score_line.split()[0])
+        for index, response in enumerate(responses):
+            try:
+                if not isinstance(response, str) or not response.strip():
+                    raise ValueError("empty or non-text response")
+                score_line = response.strip().split("\n")[0]
+                score = float(score_line.split()[0])
+            except (ValueError, IndexError) as exc:
+                self.logger.warning(
+                    f"Invalid Alpagasus evaluation response at index {index}: {exc}"
+                )
+                score = 0.0
             scores.append(score)
             
         return scores
