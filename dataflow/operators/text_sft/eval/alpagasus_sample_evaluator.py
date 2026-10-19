@@ -5,7 +5,7 @@ from dataflow.utils.storage import DataFlowStorage
 import math
 import pandas as pd
 from dataflow.core import LLMServingABC
-from dataflow.core.prompt import prompt_restrict
+from dataflow.core.prompt import prompt_restrict, DIYPromptABC
 from dataflow.prompts.general_text import AlpagasusPrompt  
 
 @prompt_restrict(
@@ -13,13 +13,14 @@ from dataflow.prompts.general_text import AlpagasusPrompt
 )
 @OPERATOR_REGISTRY.register()
 class AlpagasusSampleEvaluator(OperatorABC):
-    def __init__(self, llm_serving: LLMServingABC = None, dimension: str = 'quality'):
+    def __init__(self, llm_serving: LLMServingABC = None, dimension: str = 'quality', prompt_template: DIYPromptABC = None):
         self.logger = get_logger()
         self.logger.info(f'Initializing {self.__class__.__name__}...')
         self.llm_serving = llm_serving
         self.score_name = 'AlpagasusScore'
         self.dimension = dimension
         self.prompt = AlpagasusPrompt(dimension=self.dimension)
+        self.rubric_template = prompt_template
         self.logger.info(f'{self.__class__.__name__} initialized.')
 
     @staticmethod
@@ -62,7 +63,10 @@ class AlpagasusSampleEvaluator(OperatorABC):
             response = sample.get(input_output_key, [''])
             input_text = sample.get(input_input_key, [''])
             system_prompts.append(self.prompt.build_system_prompt(instruction, input_text, response))
-            user_prompts.append(self.prompt.build_prompt())
+            rubric = self.rubric_template.build_prompt() if self.rubric_template else self.prompt.build_prompt()
+            if self.rubric_template:
+                rubric += '\nRequired output: first line is a finite numeric score from 0 to 5; next line explains the score.\n'
+            user_prompts.append(rubric)
         inputs = [system + "\n" + user for system, user in zip(system_prompts, user_prompts)]
         responses = self.llm_serving.generate_from_input(user_inputs=inputs)
         if not isinstance(responses, list):

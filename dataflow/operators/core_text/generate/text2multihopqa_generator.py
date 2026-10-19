@@ -151,6 +151,7 @@ class Text2MultiHopQAGenerator(OperatorABC):
         # Construct examples
         constructor = ExampleConstructor(
             lang=self.lang, llm_serving=self.llm_serving,
+            prompt_template=self.prompt_template,
             max_requests_per_chunk=self.num_q,
         )
         examples = constructor.construct_examples(raw_data)

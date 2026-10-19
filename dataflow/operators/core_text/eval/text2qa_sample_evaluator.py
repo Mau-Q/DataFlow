@@ -5,7 +5,7 @@ import re
 from dataflow.utils.storage import DataFlowStorage
 from dataflow.core import OperatorABC
 from dataflow.core import LLMServingABC
-from dataflow.core.prompt import prompt_restrict
+from dataflow.core.prompt import prompt_restrict, DIYPromptABC
 
 from dataflow.prompts.text2qa import (
     Text2QAQuestionQualityPrompt,
@@ -27,10 +27,22 @@ class Text2QASampleEvaluator(OperatorABC):
     '''
     def __init__(self, 
                  llm_serving: LLMServingABC,
-                #  prompt_template = None  # prompt is fix
+                 question_quality_prompt_template: DIYPromptABC = None,
+                 answer_alignment_prompt_template: DIYPromptABC = None,
+                 answer_verifiability_prompt_template: DIYPromptABC = None,
+                 downstream_value_prompt_template: DIYPromptABC = None,
                  ):
         self.logger = get_logger()   
         self.llm_serving = llm_serving
+        self.rubric_templates = {
+            'question_quality': question_quality_prompt_template,
+            'answer_alignment': answer_alignment_prompt_template,
+            'answer_verifiability': answer_verifiability_prompt_template,
+            'downstream_value': downstream_value_prompt_template,
+        }
+        for key, prompt in self.rubric_templates.items():
+            if prompt is not None and not isinstance(prompt, DIYPromptABC):
+                raise TypeError(f'{key} rubric must be a DIYPromptABC')
     
     @staticmethod
     def get_desc(lang: str = "zh"):
@@ -99,15 +111,35 @@ class Text2QASampleEvaluator(OperatorABC):
         question_quality_inputs = []
         self.prompts = Text2QAQuestionQualityPrompt()
         question_quality_prompt = self.prompts.build_prompt()
+        if self.rubric_templates['question_quality'] is not None:
+            question_quality_prompt = self.rubric_templates['question_quality'].build_prompt() + (
+                '\nRequired output: **Grading**: N, where N is an integer from 1 to 5; '
+                '**Feedback**: explanation. Do not change the scale or field names.\n'
+            )
         answer_alignment_inputs = []
         self.prompts = Text2QAAnswerAlignmentPrompt()
         answer_alignment_prompt = self.prompts.build_prompt()
+        if self.rubric_templates['answer_alignment'] is not None:
+            answer_alignment_prompt = self.rubric_templates['answer_alignment'].build_prompt() + (
+                '\nRequired output: **Grading**: N, where N is an integer from 1 to 5; '
+                '**Feedback**: explanation. Do not change the scale or field names.\n'
+            )
         answer_verifiability_inputs = []
         self.prompts = Text2QAAnswerVerifiabilityPrompt()
         answer_verifiability_prompt = self.prompts.build_prompt()
+        if self.rubric_templates['answer_verifiability'] is not None:
+            answer_verifiability_prompt = self.rubric_templates['answer_verifiability'].build_prompt() + (
+                '\nRequired output: **Grading**: N, where N is an integer from 1 to 5; '
+                '**Feedback**: explanation. Do not change the scale or field names.\n'
+            )
         downstream_value_inputs = []
         self.prompts = Text2QADownstreamValuePrompt()
         downstream_value_prompt = self.prompts.build_prompt()
+        if self.rubric_templates['downstream_value'] is not None:
+            downstream_value_prompt = self.rubric_templates['downstream_value'].build_prompt() + (
+                '\nRequired output: **Grading**: N, where N is an integer from 1 to 5; '
+                '**Feedback**: explanation. Do not change the scale or field names.\n'
+            )
 
         for index, row in dataframe.iterrows():
             question_quality_content = question_quality_prompt + "Question: " + row[self.input_question_key] + "\n" + "Answer: " + row[self.input_answer_key]
