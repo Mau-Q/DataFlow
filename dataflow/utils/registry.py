@@ -65,13 +65,14 @@ class Registry():
         self._name = name
         self._obj_map = {}
         self._base_folder = Path(__file__).resolve().parents[1]
-        self._sub_modules = list(os.listdir(self._base_folder / name))
-        if "__init__.py" in self._sub_modules:
-            self._sub_modules.remove("__init__.py")
-        if "__pycache__" in self._sub_modules:
-            self._sub_modules.remove("__pycache__")
-        if len(self._sub_modules) > 0:
-            self.loader_map = dict(zip(self._sub_modules, [None] * len(self._sub_modules)))
+        # Finder metadata and loose files are not importable child packages.
+        # Keep namespace-package directories valid, as well as regular packages.
+        self._sub_modules = sorted(
+            child.name for child in (self._base_folder / name).iterdir()
+            if child.is_dir() and child.name.isidentifier()
+            and child.name != "__pycache__"
+        )
+        self.loader_map = dict.fromkeys(self._sub_modules)
         
     def _init_loaders(self):
         for module_name in self.loader_map.keys():
