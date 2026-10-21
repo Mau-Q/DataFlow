@@ -14,6 +14,15 @@ WORKING_DIR = "./LightRAG"
 async def initialize_rag(
         llm_model_name, api_url, api_key, embed_model_name, embed_binding_host, embedding_dim, max_embed_tokens):
 
+    try:
+        from lightrag import LightRAG
+        from lightrag.llm.openai import openai_complete_if_cache
+        from lightrag.llm.ollama import ollama_embed
+        from lightrag.utils import EmbeddingFunc
+        from lightrag.kg.shared_storage import initialize_pipeline_status
+    except ImportError as exc:
+        raise ImportError('LightRAG requires the optional lightrag-hku package') from exc
+
     async def llm_model_func(
         prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
     ) -> str:
@@ -57,7 +66,7 @@ class LightRAGServing(LLMServingABC):
                  document_list: List[str] = []
                  ):
         try:
-            from lightrag import LightRAG, QueryParam
+            from lightrag import QueryParam
             from lightrag.llm.openai import openai_complete_if_cache
             from lightrag.llm.ollama import ollama_embed
             from lightrag.utils import EmbeddingFunc
@@ -70,7 +79,7 @@ class LightRAGServing(LLMServingABC):
             """
             )
 
-        self.rag: LightRAG = None
+        self.rag = None
         self.api_url = api_url
         self.llm_model_name = llm_model_name
         self.embed_model_name = embed_model_name
@@ -137,6 +146,7 @@ class LightRAGServing(LLMServingABC):
         await asyncio.gather(*tasks, return_exceptions=True)
     
     async def generate_from_input(self, user_inputs: List[str], system_prompt: str) -> List[str]:
+        from lightrag import QueryParam
         tasks = [
             self.rag.aquery(question, system_prompt=system_prompt, param=QueryParam(mode="hybrid"))
             for question in user_inputs
