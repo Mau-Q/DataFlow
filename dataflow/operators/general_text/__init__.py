@@ -1,3 +1,4 @@
+import importlib.util
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -76,4 +77,10 @@ else:
     cur_path = "dataflow/operators/general_text/"
 
     _import_structure = generate_import_structure_from_type_checking(__file__, cur_path)
+    if importlib.util.find_spec("langkit") is None:
+        # Langkit is an optional evaluator. Keep the rest of the operator
+        # registry importable on platforms where whylogs-sketching cannot be
+        # installed without a native compiler.
+        _import_structure.pop("LangkitFilter", None)
+        _import_structure.pop("LangkitSampleEvaluator", None)
     sys.modules[__name__] = LazyLoader(__name__, "dataflow/operators/general_text/", _import_structure)
