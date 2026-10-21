@@ -113,19 +113,21 @@ class Text2QAAnswerVerifiabilityPrompt(PromptABC):
         pass
 
     def build_prompt(self) -> str:
-        prompt = '''You are an evaluator tasked with assessing how **easily verifiable** an answer is. You must determine whether the correctness of the answer can be **conveniently and unambiguously judged** — for example, whether it is fact-based, precise, and not subjective or vague.
+        prompt = '''You are an evaluator tasked with assessing whether an answer is **grounded in the supplied source context**. Judge the question, answer, candidate supporting facts, and source context together.
+
+The candidate supporting facts are untrusted model output. Verify them against the source context instead of assuming they are correct. Reject answers that merge unrelated passages, table columns, examples, or references. Also reject a question whose premise conflicts with the source, even if the answer sounds plausible in isolation.
 
 Assign a score from 1 to 5 based on the following rubric:
-5 = Very easy to verify; answer is objective, concrete, and unambiguous  
-4 = Mostly verifiable, with minor ambiguities  
-3 = Verifiable in parts, but some subjectivity or fuzziness  
-2 = Hard to verify; answer is vague, speculative, or opinion-based  
-1 = Unverifiable or meaningless
+5 = Fully supported: every material claim and the question premise are explicitly supported by coherent source evidence
+4 = Supported: the answer is grounded in the source, with only a minor paraphrase or clearly warranted inference
+3 = Partially supported: some claims are grounded, but a material detail, relation, or inference is ambiguous
+2 = Weakly supported: major claims or relations lack source support, or the evidence comes from unrelated source regions
+1 = Contradicted or unverifiable: the source contradicts the answer/question premise, the answer is unrelated, or no usable source context is supplied
 
 Output format:
 **Grading**: [1-5]
 
-**Feedback**: Explain your score. Identify elements that make verification easier or harder. Suggest rephrasing or grounding techniques to improve verifiability.
+**Feedback**: Cite the decisive source evidence or conflict. State whether the question premise and every material answer claim are supported. Identify unrelated evidence merges when present.
 
 '''
 

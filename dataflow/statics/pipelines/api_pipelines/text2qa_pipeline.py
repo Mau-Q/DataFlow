@@ -57,6 +57,7 @@ class Text2QA_APIPipeline():
             storage = self.storage.step(),
             input_question_key="generated_question",
             input_answer_key="generated_answer",
+            input_context_key="text",
             output_question_quality_key="question_quality_grades",
             output_question_quality_feedback_key="question_quality_feedbacks",
             output_answer_alignment_key="answer_alignment_grades",

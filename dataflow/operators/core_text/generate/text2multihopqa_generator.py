@@ -149,7 +149,11 @@ class Text2MultiHopQAGenerator(OperatorABC):
         ]
 
         # Construct examples
-        constructor = ExampleConstructor(lang=self.lang, llm_serving=self.llm_serving)
+        constructor = ExampleConstructor(
+            lang=self.lang, llm_serving=self.llm_serving,
+            prompt_template=self.prompt_template,
+            max_requests_per_chunk=self.num_q,
+        )
         examples = constructor.construct_examples(raw_data)
 
         # Manage data
@@ -192,7 +196,8 @@ class Text2MultiHopQAGenerator(OperatorABC):
         constructor = ExampleConstructor(
             lang=self.lang, 
             llm_serving=self.llm_serving, 
-            prompt_template = self.prompt_template
+            prompt_template = self.prompt_template,
+            max_requests_per_chunk=self.num_q,
         )
         examples = constructor.construct_examples(raw_data)
 
@@ -261,7 +266,8 @@ class ExampleConstructor:
         llm_serving: LLMServingABC = None,
         min_text_length: int = 100,
         max_text_length: int = 200000,
-        prompt_template = None
+        prompt_template = None,
+        max_requests_per_chunk: Optional[int] = None,
     ):
         r"""Initialize the ExampleConstructor.
 
@@ -275,6 +281,9 @@ class ExampleConstructor:
         self.logger = get_logger()
         self.max_length = max_text_length
         self.min_length = min_text_length
+        if max_requests_per_chunk is not None and max_requests_per_chunk < 1:
+            raise ValueError("max_requests_per_chunk must be positive")
+        self.max_requests_per_chunk = max_requests_per_chunk
         # self.prompt = Text2MultiHopQAGeneratorPrompt(lang=self.lang)
         if prompt_template:
             self.prompt_template = prompt_template
@@ -461,7 +470,11 @@ class ExampleConstructor:
             List[Dict[str, str]]: List of generated QA pairs.
         """
         user_inputs=[]
-        for pair in info_pairs:
+        selected_pairs = (
+            info_pairs[:self.max_requests_per_chunk]
+            if self.max_requests_per_chunk is not None else info_pairs
+        )
+        for pair in selected_pairs:
             # 1. Generate multi-hop question-answer pair using AI
             # Construct full context
             context = (
@@ -483,8 +496,13 @@ class ExampleConstructor:
         自动跳过非法JSON和干扰文本
         """
         qa_pairs = []
-        for response in responses:
+        for index, response in enumerate(responses):
             # self.logger.info(f"generated qa: {response}")
+            if not isinstance(response, str) or not response.strip():
+                self.logger.warning(
+                    f"Skipping empty or non-text QA response at index {index}"
+                )
+                continue
             
             # 方法1：尝试直接解析整个响应为JSON
             try:
@@ -607,5 +625,4 @@ class ExampleConstructor:
             complexities.append(qa_complexity)
 
         return sum(complexities) / len(complexities)
-
 

@@ -91,15 +91,12 @@ def test_allowed_prompts_attribute():
     assert OperatorKwOnly.ALLOWED_PROMPTS == (APrompt, BPrompt)
 
 @pytest.mark.cpu
-def test_kwargs_only_behavior_no_check_on_positional():
+def test_positional_prompt_is_checked():
     """
-    当前实现只从 kwargs 获取 prompt_template。
-    使用‘位置参数’传入时不会触发检查（这是一个已知行为/潜在坑）。
-    下面这行不会抛异常：
+    位置参数也会绑定到 prompt_template 并检查类型。
     """
-    # 尽管 OtherPrompt() 不在白名单里，但因为是位置参数，未被检查
     with pytest.raises(TypeError):
-        op = OperatorWithPositional(OtherPrompt())
+        OperatorWithPositional(OtherPrompt())
 
 
 @pytest.mark.cpu
@@ -179,7 +176,10 @@ def test_allowed_values_positional_and_keyword(Cls, value):
             assert getattr(obj, "prompt_template") is value
 
     # 再测关键字参数（所有都支持）
-    obj2 = Cls(prompt_template=value) if value is not None else Cls(prompt_template=None)
+    if Cls is OpMiddle:
+        obj2 = Cls(999, prompt_template=value)
+    else:
+        obj2 = Cls(prompt_template=value)
     assert getattr(obj2, "prompt_template") is value
 
 # ================== 非允许类型：位置 & 关键字都应抛错 ==================
