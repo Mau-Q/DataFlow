@@ -471,6 +471,19 @@ def test_no_operator_missing_from_lazyload():
         if name not in registered
     }
 
+    # The Windows installation deliberately omits optional Langkit (native
+    # whylogs build). Verify those declarations statically; do not change the
+    # production registry's optional discovery behavior or hide other omissions.
+    import importlib.util
+    if importlib.util.find_spec('langkit') is None:
+        from dataflow.utils.registry import generate_import_structure_from_type_checking
+        declared = generate_import_structure_from_type_checking(
+            str(operators_dir / 'general_text/__init__.py'),
+            'dataflow/operators/general_text/')
+        for name in ('LangkitFilter', 'LangkitSampleEvaluator'):
+            assert name in declared, f'Optional operator missing from TYPE_CHECKING: {name}'
+            missing.pop(name, None)
+
     if missing:
         lines = []
         for name, (path, has_deco, has_base) in sorted(missing.items()):
